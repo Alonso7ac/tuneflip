@@ -1,0 +1,9 @@
+{
+  "expo": {
+    "name": "TuneFlip",
+    "slug": "tuneflip",
+    "orientation": "portrait",
+    "android": { "package": "com.alonso.tuneflip" }
+  }
+}
+
