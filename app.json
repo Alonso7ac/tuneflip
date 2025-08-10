@@ -3,7 +3,20 @@
     "name": "TuneFlip",
     "slug": "tuneflip",
     "orientation": "portrait",
-    "android": { "package": "com.alonso.tuneflip" }
+    "android": {
+      "package": "com.alonso.tuneflip"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "b8b54ac3-8372-4c80-8b3f-22dedb3194c4"
+      }
+    },
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/b8b54ac3-8372-4c80-8b3f-22dedb3194c4"
+    },
+    "ios": {}
   }
 }
-
