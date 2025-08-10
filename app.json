@@ -2,21 +2,19 @@
   "expo": {
     "name": "TuneFlip",
     "slug": "tuneflip",
+    "version": "1.0.0",
     "orientation": "portrait",
     "android": {
-      "package": "com.alonso.tuneflip"
+      "package": "com.alonso.tuneflip",
+      "versionCode": 1
+    },
+    "runtimeVersion": { "policy": "appVersion" },
+    "updates": {
+      "url": "https://u.expo.dev/b8b54ac3-8372-4c80-8b3f-22dedb3194c4",
+      "enabled": true
     },
     "extra": {
-      "eas": {
-        "projectId": "b8b54ac3-8372-4c80-8b3f-22dedb3194c4"
-      }
-    },
-    "runtimeVersion": {
-      "policy": "appVersion"
-    },
-    "updates": {
-      "url": "https://u.expo.dev/b8b54ac3-8372-4c80-8b3f-22dedb3194c4"
-    },
-    "ios": {}
+      "eas": { "projectId": "b8b54ac3-8372-4c80-8b3f-22dedb3194c4" }
+    }
   }
 }
