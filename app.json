@@ -2,12 +2,35 @@
   "expo": {
     "name": "TuneFlip",
     "slug": "tuneflip",
+
+    // keep your current "version": "1.0.0" if you're OTA’ing for old APKs
     "version": "1.0.0",
-    "orientation": "portrait",
+
+    "scheme": "tuneflip",                 // custom scheme: tuneflip://...
+
     "android": {
+      "icon": "./assets/tuneflip-icon-1024.png",
       "package": "com.alonso.tuneflip",
-      "versionCode": 1
+      "versionCode": 1,
+
+      // App Links for https://tuneflip.app/track...
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "category": ["BROWSABLE", "DEFAULT"],
+          "data": [
+            { "scheme": "https", "host": "tuneflip.app", "pathPrefix": "/track" }
+          ]
+        }
+      ]
     },
+
+    // iOS Universal Links (takes effect on next iOS build)
+    "ios": {
+      "icon": "./assets/tuneflip-icon-1024.png",
+      "associatedDomains": ["applinks:tuneflip.app"]
+    },
+
     "runtimeVersion": { "policy": "appVersion" },
     "updates": {
       "url": "https://u.expo.dev/b8b54ac3-8372-4c80-8b3f-22dedb3194c4",
@@ -18,3 +41,5 @@
     }
   }
 }
+
+
