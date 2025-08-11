@@ -1,20 +1,11 @@
 {
-  "cli": {
-    "version": ">= 7.0.0",
-    "appVersionSource": "remote"
-  },
+  "cli": { "version": ">= 8.0.0" },
   "build": {
-    "preview": {
+    "production": {
+      "channel": "production",
       "android": {
         "buildType": "apk"
-      },
-      "channel": "preview"
-    },
-    "production": {
-      "android": {
-        "gradleCommand": ":app:bundleRelease"
-      },
-      "channel": "production"
+      }
     }
   }
 }

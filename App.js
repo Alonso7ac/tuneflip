@@ -1,4 +1,5 @@
-// V1.7.2 (final)
+// V1.8 — no-reset Back/Close, artwork prefetch, Buy below, 30-day cooldown
+
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   SafeAreaView, View, Text, FlatList, Image, StyleSheet, Dimensions,
@@ -10,6 +11,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Audio } from "expo-av";
 import * as Linking from "expo-linking";
 import * as Haptics from "expo-haptics";
+import { Asset } from "expo-asset";
 import { Ionicons } from "@expo/vector-icons";
 
 // ===== Tunables =====
@@ -24,7 +26,7 @@ const TUNEFLIP_UNIVERSAL_BASE = "https://tuneflip.app/track"; // placeholder
 const TUNEFLIP_APPSTORE_URL   = "https://apps.apple.com/app/id0000000000"; // placeholder
 
 // Discovery hygiene
-const LIKE_COOLDOWN_DAYS = 10;
+const LIKE_COOLDOWN_DAYS = 30;
 const KARAOKE_PATTERNS = [
   /karaoke/i,
   /instrumental(?: version)?/i,
@@ -40,8 +42,6 @@ const CARD_HEIGHT = screen.height;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const makeSeed = () => (Date.now() ^ Math.floor(Math.random() * 1e9)) >>> 0;
 
-// Baseline genres (server list will override when available)
-// NOTE: removed Reggae (16), K-Pop (1310), Afrobeats (1259)
 const DEFAULT_GENRES = [
   { id: 14, name: "Pop" },
   { id: 18, name: "Hip-Hop/Rap" },
@@ -57,10 +57,9 @@ const DEFAULT_GENRES = [
   { id: 5,  name: "Classical" },
 ];
 
-const OMIT_GENRE_IDS = new Set([16, 1310, 1259]); // filtered if server returns them
+const OMIT_GENRE_IDS = new Set([16, 1310, 1259]);
 
 const trackKey = (t) => (t?.id || `${t?.title}|${t?.artist}|${t?.album}`);
-
 function rng(seed) { let t = seed % 2147483647; if (t <= 0) t += 2147483646; return () => (t = (t * 48271) % 2147483647) / 2147483647; }
 function shuffleInPlace(arr, seed) { const rand = rng(seed); for (let i = arr.length - 1; i > 0; i--) { const j = Math.floor(rand() * (i + 1)); [arr[i], arr[j]] = [arr[j], arr[i]]; } return arr; }
 
@@ -141,9 +140,7 @@ async function fetchTracksForGenres(genreIds, seed) {
       try {
         const arr = await fetchTracks(id, (perSeed ^ Number(id) ^ (i * 2654435761)) >>> 0);
         return arr;
-      } catch {
-        return [];
-      }
+      } catch { return []; }
     })
   );
 
@@ -152,11 +149,9 @@ async function fetchTracksForGenres(genreIds, seed) {
 
   const maxLen = Math.max(...nonEmpty.map((arr) => arr.length));
   const mixed = [];
-  for (let i = 0; i < maxLen; i++) {
-    for (let g = 0; g < nonEmpty.length; g++) {
-      const item = nonEmpty[g][i];
-      if (item) mixed.push(item);
-    }
+  for (let i = 0; i < maxLen; i++) for (let g = 0; g < nonEmpty.length; g++) {
+    const item = nonEmpty[g][i];
+    if (item) mixed.push(item);
   }
 
   shuffleInPlace(mixed, perSeed ^ 0x9e3779b1);
@@ -165,7 +160,7 @@ async function fetchTracksForGenres(genreIds, seed) {
   return out;
 }
 
-// --- Search (robust + minimal filtering so results show up) ---
+// --- Search ---
 async function fetchSearchTracks(term, seed) {
   const useSeed = seed ?? makeSeed();
   const enc = encodeURIComponent;
@@ -173,7 +168,7 @@ async function fetchSearchTracks(term, seed) {
 
   const tries = [
     `${BACKEND}/api/itunes-search?term=${enc(term)}&media=music&entity=musicTrack&${base}`,
-    `${BACKEND}/api/itunes-search?term=${enc(term)}&${base}`, // plain
+    `${BACKEND}/api/itunes-search?term=${enc(term)}&${base}`,
     `${BACKEND}/api/itunes-search?term=${enc(term)}&entity=musicTrack&attribute=songTerm&${base}`,
     `${BACKEND}/api/itunes-search?term=${enc(term)}&entity=musicTrack&attribute=artistTerm&${base}`,
     `${BACKEND}/api/itunes-search?term=${enc(term)}&entity=musicTrack&attribute=albumTerm&${base}`,
@@ -198,7 +193,6 @@ async function fetchSearchTracks(term, seed) {
   }
 
   const normalized = (merged || []).map(normalizeTrack).filter((t) => t.title && t.artist);
-  // de-dupe by id/title-artist
   const seen = new Set();
   const deduped = [];
   for (const t of normalized) {
@@ -217,6 +211,7 @@ function openInService(track, service) {
   if (service === "spotify") return Linking.openURL(`https://open.spotify.com/search/${q}`);
   if (service === "ytmusic") return Linking.openURL(`https://music.youtube.com/search?q=${q}`);
 }
+function openStore(track) { if (track?.storeUrl) Linking.openURL(track.storeUrl); }
 
 function buildTuneFlipLink(track) {
   const params = new URLSearchParams({
@@ -230,7 +225,6 @@ function buildTuneFlipLink(track) {
   });
   return `${TUNEFLIP_UNIVERSAL_BASE}?${params.toString()}`;
 }
-
 async function shareTrack(track) {
   if (!track) return;
   const tfLink = buildTuneFlipLink(track);
@@ -290,7 +284,7 @@ function ProfileScreen({ onDone, onOpenLiked, onCancel, onGenresFetched }) {
   const [genres, setGenres] = useState([]);
 
   const [name, setName] = useState("");
-  const [age, setAge] = useState("");
+    const [age, setAge] = useState("");
   const [gender, setGender] = useState("Prefer not to say");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -328,7 +322,7 @@ function ProfileScreen({ onDone, onOpenLiked, onCancel, onGenresFetched }) {
         name: name.trim(), age: Number(age) || null, gender,
         email: email.trim(), password, favoriteGenreIds, savedAt: Date.now(),
       });
-      onDone?.();
+      onDone?.(); // Save & Apply -> refresh outside
     } catch (e) { Alert.alert("Save failed", e?.message || "Please try again."); }
     finally { setSaving(false); }
   }, [name, age, gender, email, password, favoriteGenreIds, onDone]);
@@ -492,6 +486,8 @@ function TrackCard({
   onOpenSessionLikes,
   onOpenGenres,
   onOpenProfile,
+  onBuyPressed,
+  artworkUri,
 }) {
   const translate = useRef(new Animated.Value(0)).current;
   const likePulse = useRef(new Animated.Value(1)).current;
@@ -567,10 +563,11 @@ function TrackCard({
         </Animated.View>
 
         <Image
-          source={{ uri: item.artwork }}
-          style={{ width: screen.width * 0.86, height: screen.width * 0.86, resizeMode: "contain", marginTop: -CARD_HEIGHT * 0.08, zIndex: 1 }}
+          source={{ uri: artworkUri || item.artwork }}
+          style={{ width: screen.width * 0.86, height: screen.width * 0.86, resizeMode: "contain", marginTop: -CARD_HEIGHT * 0.12, zIndex: 1 }}
+          {...(Platform.OS === "android" ? { fadeDuration: 0 } : {})}
         />
-        <View style={{ marginTop: 16, alignItems: "center", paddingHorizontal: 8 }}>
+        <View style={{ marginTop: 14, alignItems: "center", paddingHorizontal: 8 }}>
           <Text style={styles.title} numberOfLines={1}>{item.title}</Text>
           <Text style={styles.meta} numberOfLines={1}>{item.artist}</Text>
           <Text style={styles.metaDim} numberOfLines={1}>{item.album}</Text>
@@ -578,7 +575,7 @@ function TrackCard({
       </Animated.View>
 
       {/* Buttons (toggleable) */}
-      <View style={[styles.rowButtons, { justifyContent: "center" }]}>
+      <View style={[styles.rowButtons, { justifyContent: "center", marginTop: 10 }]}>
         <TouchableOpacity
           style={[styles.actionBtn, styles.nope, isDisliked && styles.nopeActive]}
           onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); onToggleDislike?.(item, isDisliked); }}
@@ -596,6 +593,14 @@ function TrackCard({
         <View style={{ width: 8 }} />
         <TouchableOpacity style={styles.actionBtn} onPress={() => onOpenPressed?.(item)}><Text style={styles.actionBtnText}>Open…</Text></TouchableOpacity>
         <TouchableOpacity style={styles.actionBtn} onPress={() => onSharePressed?.(item)}><Text style={styles.actionBtnText}>Share</Text></TouchableOpacity>
+      </View>
+
+      {/* Buy below, centered */}
+      <View style={{ alignItems: "center", marginTop: 8 }}>
+        <TouchableOpacity style={styles.buyBtn} onPress={() => onBuyPressed?.(item)}>
+          <Ionicons name="cart" size={18} color="white" />
+          <Text style={[styles.actionBtnText, { marginLeft: 6 }]}>Buy</Text>
+        </TouchableOpacity>
       </View>
     </View>
   );
@@ -625,7 +630,6 @@ export default function App() {
 
   const [sessionGenreIds, setSessionGenreIds] = useState(null);
 
-  // SEARCH (simplified)
   const [searchQuery, setSearchQuery] = useState("");
   const [isSearchMode, setIsSearchMode] = useState(false);
 
@@ -637,9 +641,16 @@ export default function App() {
 
   const listRef = useRef(null);
 
-  // Sets use keys (so items without id still work)
-  const likeSet = useRef(new Set());      // session likes (keys)
-  const dislikeSet = useRef(new Set());   // session dislikes (keys)
+  // ARTWORK CACHE/PREFETCH
+  const artworkCacheRef = useRef(new Map());     // originalUri -> localUri
+  const artworkPrefetchingRef = useRef(new Set());
+  const [artworkTick, setArtworkTick] = useState(0);
+
+  // prevent re-autoplay when closing overlays
+  const suppressNextAutoplayRef = useRef(false);
+
+  const likeSet = useRef(new Set());
+  const dislikeSet = useRef(new Set());
 
   const likedDatesRef = useRef({});
   const cutoffRef = useRef(0);
@@ -647,7 +658,6 @@ export default function App() {
   const tracksRef = useRef(tracks);
   useEffect(() => { tracksRef.current = tracks; }, [tracks]);
 
-  // Persistent disliked + liked sets (refs so highlights update immediately)
   const dislikedPersistentRef = useRef(new Set());
   const likedPersistentSetRef = useRef(new Set());
   useEffect(() => {
@@ -684,7 +694,6 @@ export default function App() {
     } catch {}
   }, []);
 
-  // Global filters
   const isKaraoke = (t) => {
     const blob = `${t.title || ""} ${t.album || ""} ${t.artist || ""}`;
     return KARAOKE_PATTERNS.some((re) => re.test(blob));
@@ -698,9 +707,8 @@ export default function App() {
   const matchesSelectedGenres = useCallback((t, ids) => {
     if (!ids || !ids.length) return true;
     const names = ids.map((id) => (genreNameByIdRef.current.get(String(id)) || "").toLowerCase()).filter(Boolean);
-    if (!names.length) return true;
     const gn = (t.genreName || "").toLowerCase();
-    if (!gn) return true;
+    if (!names.length || !gn) return true;
     return names.some((n) => gn.includes(n));
   }, []);
 
@@ -718,9 +726,34 @@ export default function App() {
       const tightened = cooled.filter((t) => matchesSelectedGenres(t, idsForTighten));
       if (tightened.length >= Math.min(10, PAGE / 2)) cooled = tightened;
     }
-
     return cooled;
   }, [matchesSelectedGenres]);
+
+  // ===== ARTWORK PREFETCHER =====
+  const ensureArtworkPrefetched = useCallback(async (idx) => {
+    if (idx == null || idx < 0 || idx >= (tracksRef.current?.length || 0)) return;
+    const uri = tracksRef.current[idx]?.artwork;
+    if (!uri) return;
+    if (artworkCacheRef.current.has(uri) || artworkPrefetchingRef.current.has(uri)) return;
+
+    artworkPrefetchingRef.current.add(uri);
+    try {
+      const asset = Asset.fromURI(uri);
+      await asset.downloadAsync();
+      const local = asset.localUri || asset.uri;
+      if (local) {
+        artworkCacheRef.current.set(uri, local);
+        setArtworkTick((t) => t + 1);
+      }
+    } catch {} finally {
+      artworkPrefetchingRef.current.delete(uri);
+    }
+  }, []);
+
+  useEffect(() => {
+    ensureArtworkPrefetched(activeIndex);
+    ensureArtworkPrefetched(activeIndex + 1);
+  }, [activeIndex, ensureArtworkPrefetched]);
 
   const refreshDiscoveryFeed = useCallback(
     async (explicitGenreIds = null) => {
@@ -740,7 +773,7 @@ export default function App() {
 
         res = applyGlobalFilters(res, ids);
 
-        setIsSearchMode(false); // leaving search if we refresh discovery
+        setIsSearchMode(false);
         setFeedVersion((v) => v + 1);
         setTracks(res);
         setActiveIndex(0);
@@ -748,6 +781,8 @@ export default function App() {
         requestAnimationFrame(() => {
           listRef.current?.scrollToOffset?.({ offset: 0, animated: false });
         });
+
+        setTimeout(() => { ensureArtworkPrefetched(0); ensureArtworkPrefetched(1); }, 0);
 
         await sleep(80);
         await playPreview(0);
@@ -757,24 +792,37 @@ export default function App() {
         setLoading(false);
       }
     },
-    [sessionGenreIds, profile, stopAudio, cleanupPreloadedExcept, applyGlobalFilters]
+    [sessionGenreIds, profile, stopAudio, cleanupPreloadedExcept, applyGlobalFilters, ensureArtworkPrefetched]
   );
 
+  // Close overlays without refreshing (keeps playing)
+  const closeOverlaysNoRefresh = useCallback(() => {
+    suppressNextAutoplayRef.current = true; // <<< prevent re-autoplay on re-mount
+    setShowGenresQuick(false);
+    setShowLikedSession(false);
+    setShowLikedPersistent(false);
+    setShowProfile(false);
+  }, []);
+
+  // Back / hardware handling — close overlays first (no refresh, no autoplay), then exit search
   useEffect(() => {
     const onBack = () => {
       if (openModal) { setOpenModal(false); return true; }
-      if (isSearchMode) { exitSearch(); return true; }
-      let closed = false;
-      if (showGenresQuick) { setShowGenresQuick(false); closed = true; }
-      else if (showLikedSession) { setShowLikedSession(false); closed = true; }
-      else if (showLikedPersistent) { setShowLikedPersistent(false); closed = true; }
-      else if (showProfile) { setShowProfile(false); closed = true; }
-      if (closed) { setTimeout(() => { refreshDiscoveryFeed(); }, 0); return true; }
+
+      if (showGenresQuick) { suppressNextAutoplayRef.current = true; setShowGenresQuick(false); return true; }
+      if (showLikedSession) { suppressNextAutoplayRef.current = true; setShowLikedSession(false); return true; }
+      if (showLikedPersistent) { suppressNextAutoplayRef.current = true; setShowLikedPersistent(false); return true; }
+      if (showProfile) { suppressNextAutoplayRef.current = true; setShowProfile(false); return true; }
+
+      if (isSearchMode) { // back from Search -> refresh to discovery
+        exitSearch(); 
+        return true;
+      }
       return false;
     };
     const sub = BackHandler.addEventListener("hardwareBackPress", onBack);
     return () => sub.remove();
-  }, [openModal, isSearchMode, showGenresQuick, showLikedSession, showLikedPersistent, showProfile, refreshDiscoveryFeed]);
+  }, [openModal, isSearchMode, showGenresQuick, showLikedSession, showLikedPersistent, showProfile]);
 
   // Initial load
   useEffect(() => {
@@ -814,6 +862,9 @@ export default function App() {
         if (live) {
           setTracks(initial);
           setActiveIndex(0);
+
+          setTimeout(() => { ensureArtworkPrefetched(0); ensureArtworkPrefetched(1); }, 0);
+
           await sleep(80);
           await playPreview(0);
         }
@@ -824,9 +875,9 @@ export default function App() {
       }
     })();
     return () => { live = false; };
-  }, [applyGlobalFilters]);
+  }, [applyGlobalFilters, ensureArtworkPrefetched]);
 
-  // Preload & audio
+  // Audio preloading
   const preloadIndex = useCallback(async (idx) => {
     if (idx == null || idx < 0 || idx >= tracksRef.current.length) return;
     const uri = tracksRef.current[idx]?.previewUrl;
@@ -873,14 +924,25 @@ export default function App() {
 
     const nextIdx = index + 1;
     preloadIndex(nextIdx);
-  }, [stopAudio, preloadIndex]);
+    ensureArtworkPrefetched(nextIdx);
+  }, [stopAudio, preloadIndex, ensureArtworkPrefetched]);
 
-  useEffect(() => { (async () => { await playPreview(activeIndex); })(); }, [activeIndex, playPreview]);
+  // IMPORTANT: skip autoplay when closing overlays (no reset)
+  useEffect(() => {
+    (async () => {
+      if (suppressNextAutoplayRef.current) {
+        suppressNextAutoplayRef.current = false;
+        return; // keep current song playing exactly as-is
+      }
+      await playPreview(activeIndex);
+    })();
+  }, [activeIndex, playPreview]);
 
   const handleOpenPressed = useCallback((track) => { setOpenForTrack(track); setOpenModal(true); }, []);
   const handleSharePressed = useCallback((track) => { shareTrack(track); }, []);
+  const handleBuyPressed = useCallback((track) => { openStore(track); }, []);
 
-  // ---- Like / Dislike (immediate UI sync + toggle) ----
+  // Like / Dislike
   const markLikedTimestamp = useCallback(async (t) => {
     const id = trackKey(t);
     const map = { ...(likedDatesRef.current || {}) };
@@ -1009,10 +1071,11 @@ export default function App() {
     const finalIdx = await waitForIndexById(id);
     if (finalIdx >= 0) {
       setActiveIndex(finalIdx);
+      ensureArtworkPrefetched(finalIdx);
       await sleep(120);
       await playPreview(finalIdx);
     }
-  }, [stopAudio, waitForIndexById, playPreview]);
+  }, [stopAudio, waitForIndexById, playPreview, ensureArtworkPrefetched]);
 
   // Deep-links
   const handleDeepLink = useCallback(async (url) => {
@@ -1045,7 +1108,6 @@ export default function App() {
     return () => sub.remove();
   }, [handleDeepLink]);
 
-  // Let screens update the genre name map
   const onGenresFetched = useCallback((arr) => {
     try {
       const m = new Map(DEFAULT_GENRES.map(g => [String(g.id), g.name]));
@@ -1065,7 +1127,6 @@ export default function App() {
 
       const res = await fetchSearchTracks(q, makeSeed());
 
-      // For search, don't apply cooldown; only remove karaoke & disliked
       const filtered = (res || [])
         .filter((t) => !KARAOKE_PATTERNS.some((re) => re.test(`${t.title} ${t.album} ${t.artist}`)))
         .filter((t) => !dislikedPersistentRef.current.has(trackKey(t)));
@@ -1076,6 +1137,7 @@ export default function App() {
       setActiveIndex(0);
 
       requestAnimationFrame(() => listRef.current?.scrollToOffset?.({ offset: 0, animated: false }));
+      setTimeout(() => { ensureArtworkPrefetched(0); ensureArtworkPrefetched(1); }, 0);
       await sleep(80);
       await playPreview(0);
     } catch (e) {
@@ -1083,17 +1145,12 @@ export default function App() {
     } finally {
       setLoading(false);
     }
-  }, [searchQuery, stopAudio, cleanupPreloadedExcept, playPreview]);
+  }, [searchQuery, stopAudio, cleanupPreloadedExcept, playPreview, ensureArtworkPrefetched]);
 
   const exitSearch = useCallback(() => {
     setSearchQuery("");
     setIsSearchMode(false);
     refreshDiscoveryFeed();
-  }, [refreshDiscoveryFeed]);
-
-  const onCloseWithRefresh = useCallback(async () => {
-    setShowLikedSession(false); setShowLikedPersistent(false); setShowGenresQuick(false); setShowProfile(false);
-    await refreshDiscoveryFeed();
   }, [refreshDiscoveryFeed]);
 
   const openSessionLikesList = useCallback(() => { setShowProfile(false); setShowGenresQuick(false); setShowLikedPersistent(false); setShowLikedSession(true); }, []);
@@ -1103,9 +1160,9 @@ export default function App() {
   // Screens
   if (showProfile) return (
     <ProfileScreen
-      onDone={refreshForProfile}
+      onDone={refreshForProfile}               // Save & Apply -> refresh
       onOpenLiked={() => { setShowProfile(false); setShowLikedPersistent(true); }}
-      onCancel={onCloseWithRefresh}
+      onCancel={closeOverlaysNoRefresh}        // Close/back -> NO refresh and NO re-autoplay
       onGenresFetched={onGenresFetched}
     />
   );
@@ -1113,17 +1170,17 @@ export default function App() {
     <GenresQuickScreen
       initialSelected={sessionGenreIds ?? (profile?.favoriteGenreIds ?? [])}
       savedProfileGenreIds={profile?.favoriteGenreIds ?? []}
-      onApply={applySessionGenres}
-      onClose={onCloseWithRefresh}
+      onApply={applySessionGenres}             // Apply -> refresh
+      onClose={closeOverlaysNoRefresh}         // Close/back -> NO refresh and NO re-autoplay
       onGenresFetched={onGenresFetched}
     />
   );
-  if (showLikedPersistent) return <LikedSongsScreen title="Liked Songs (All)" liked={likedPersistent} onClose={onCloseWithRefresh} onOpenInFeed={openLikedInFeed} />;
-  if (showLikedSession) return <LikedSongsScreen title="Session Likes" liked={likedSession} onClose={onCloseWithRefresh} onOpenInFeed={openLikedInFeed} />;
+  if (showLikedPersistent) return <LikedSongsScreen title="Liked Songs (All)" liked={likedPersistent} onClose={closeOverlaysNoRefresh} onOpenInFeed={openLikedInFeed} />;
+  if (showLikedSession)    return <LikedSongsScreen title="Session Likes"      liked={likedSession}    onClose={closeOverlaysNoRefresh} onOpenInFeed={openLikedInFeed} />;
 
   const renderEmpty = !loading && tracks.length === 0;
+  const resolvedArtworkFor = (item) => artworkCacheRef.current.get(item.artwork) || item.artwork;
 
-  // helpers for highlighted states: session OR persistent
   const isLikedKey = (k) => likeSet.current.has(k) || likedPersistentSetRef.current.has(k);
   const isDislikedKey = (k) => dislikeSet.current.has(k) || dislikedPersistentRef.current.has(k);
 
@@ -1176,9 +1233,11 @@ export default function App() {
         <FlatList
           ref={listRef}
           listKey={String(feedVersion)}
-          extraData={{ opinionTick, feedVersion }}
+          extraData={{ opinionTick, feedVersion, artworkTick }}
           data={tracks}
           keyExtractor={(item, index) => `${trackKey(item)}-${feedVersion}-${index}`}
+          initialScrollIndex={activeIndex}                        // keep same card visible on re-mount
+          getItemLayout={(_, index) => ({ length: CARD_HEIGHT, offset: CARD_HEIGHT * index, index })}
           renderItem={({ item }) => {
             const k = trackKey(item);
             return (
@@ -1194,6 +1253,8 @@ export default function App() {
                 onOpenSessionLikes={openSessionLikesList}
                 onOpenGenres={openGenresQuickList}
                 onOpenProfile={openProfileFull}
+                onBuyPressed={handleBuyPressed}
+                artworkUri={resolvedArtworkFor(item)}
               />
             );
           }}
@@ -1204,11 +1265,13 @@ export default function App() {
           onViewableItemsChanged={onViewableItemsChanged.current}
           viewabilityConfig={viewabilityConfigRef.current}
           showsVerticalScrollIndicator={false}
-          getItemLayout={(_, index) => ({ length: CARD_HEIGHT, offset: CARD_HEIGHT * index, index })}
           scrollEventThrottle={16}
           onMomentumScrollEnd={() => {
             const idx = activeIndex + 1;
-            setTimeout(() => preloadIndex(idx), 30);
+            setTimeout(() => {
+              preloadIndex(idx);
+              ensureArtworkPrefetched(idx);
+            }, 30);
           }}
         />
       )}
@@ -1251,7 +1314,7 @@ const styles = StyleSheet.create({
   metaDim: { color: "#aaa", marginTop: 2, fontSize: 13 },
 
   // Overlay controls
-  overlayWrap: { position: "absolute", top: 24, left: 0, right: 0, alignItems: "center", zIndex: 5 },
+  overlayWrap: { position: "absolute", top: 20, left: 0, right: 0, alignItems: "center", zIndex: 5 },
   overlayRow: { flexDirection: "row", gap: 10, backgroundColor: "rgba(0,0,0,0.25)", padding: 6, borderRadius: 999 },
   overlayBtn: { backgroundColor: "#1f1f23", borderWidth: 1, borderColor: "#2a2a31", paddingHorizontal: 12, paddingVertical: 8, borderRadius: 999, flexDirection: "row", alignItems: "center", gap: 6 },
   overlayBtnText: { color: "white", fontWeight: "700", fontSize: 12 },
@@ -1302,4 +1365,7 @@ const styles = StyleSheet.create({
 
   topBtn: { paddingHorizontal: 10, paddingVertical: 6 },
   topBtnText: { color: "#fff" },
+
+  // Buy button
+  buyBtn: { alignItems: "center", flexDirection: "row", justifyContent: "center", backgroundColor: "#1f1f23", paddingHorizontal: 16, paddingVertical: 10, borderRadius: 12, borderWidth: 1, borderColor: "transparent" },
 });
